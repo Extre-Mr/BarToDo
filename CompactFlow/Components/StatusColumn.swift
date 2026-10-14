@@ -5,6 +5,11 @@ struct StatusColumn: View {
     @ObservedObject var viewModel: TaskBoardViewModel
     @State private var confirmingClear = false
     @State private var targetedIndex: Int?
+    @State private var cardFrames: [UUID: CGRect] = [:]
+    @State private var selectionOrigin: CGPoint?
+    @State private var selectionPoint: CGPoint?
+    @State private var selectionBase: Set<UUID> = []
+    @State private var isMarqueeSelecting = false
 
     private var items: [TaskItem] { viewModel.tasks(in: status) }
 
@@ -13,8 +18,9 @@ struct StatusColumn: View {
             header
             if status == .todo { AddTaskField(viewModel: viewModel) }
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
                     if items.isEmpty {
                         VStack(spacing: 7) {
                             Image(systemName: emptyIcon)
@@ -35,6 +41,14 @@ struct StatusColumn: View {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, task in
                         DropSlot(active: targetedIndex == index, color: accent)
                         TaskCard(task: task, viewModel: viewModel)
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: TaskCardFramePreferenceKey.self,
+                                        value: [task.id: proxy.frame(in: .named(coordinateSpaceName))]
+                                    )
+                                }
+                            }
                             .dropDestination(for: String.self) { payloads, _ in
                                 move(payloads.first, to: index)
                             } isTargeted: { targeted in
@@ -48,9 +62,22 @@ struct StatusColumn: View {
                         } isTargeted: { targeted in
                             targetedIndex = targeted ? items.count : nil
                         }
+                    }
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 4)
                 }
-                .padding(.horizontal, 2)
-                .padding(.bottom, 4)
+                .coordinateSpace(name: coordinateSpaceName)
+                .onPreferenceChange(TaskCardFramePreferenceKey.self) { cardFrames = $0 }
+                .simultaneousGesture(marqueeGesture)
+
+                if let rectangle = selectionRectangle, isMarqueeSelecting {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.12))
+                        .overlay(Rectangle().stroke(Color.accentColor.opacity(0.8), lineWidth: 1))
+                        .frame(width: rectangle.width, height: rectangle.height)
+                        .offset(x: rectangle.minX, y: rectangle.minY)
+                        .allowsHitTesting(false)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -112,9 +139,49 @@ struct StatusColumn: View {
             : Color(nsColor: .controlBackgroundColor).opacity(0.42)
     }
 
+    private var coordinateSpaceName: String { "task-column-\(status.rawValue)" }
+
+    private var selectionRectangle: CGRect? {
+        guard let origin = selectionOrigin, let point = selectionPoint else { return nil }
+        return CGRect(
+            x: min(origin.x, point.x),
+            y: min(origin.y, point.y),
+            width: abs(point.x - origin.x),
+            height: abs(point.y - origin.y)
+        )
+    }
+
+    private var marqueeGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if selectionOrigin == nil {
+                    // Card-originated drags remain task drags. Marquee selection only
+                    // begins in the column's empty space.
+                    guard !cardFrames.values.contains(where: { $0.contains(value.startLocation) }) else { return }
+                    selectionOrigin = value.startLocation
+                    selectionBase = NSEvent.modifierFlags.intersection([.command, .shift]).isEmpty
+                        ? [] : viewModel.selectedTaskIDs
+                    isMarqueeSelecting = true
+                }
+                guard isMarqueeSelecting else { return }
+                selectionPoint = value.location
+                guard let rectangle = selectionRectangle else { return }
+                let hits = Set(cardFrames.compactMap { id, frame in frame.intersects(rectangle) ? id : nil })
+                viewModel.select(selectionBase.union(hits), extending: false)
+            }
+            .onEnded { _ in
+                selectionOrigin = nil
+                selectionPoint = nil
+                selectionBase = []
+                isMarqueeSelecting = false
+            }
+    }
+
     private func move(_ payload: String?, to index: Int) -> Bool {
-        guard let payload, let id = UUID(uuidString: payload) else { return false }
-        let sourceIndex = items.firstIndex(where: { $0.id == id })
+        guard let payload else { return false }
+        let ids = payload.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+        guard let id = ids.first else { return false }
+        let sourceIndex = ids.count == 1 ? items.firstIndex(where: { $0.id == id }) : nil
         let destination: Int
         if let sourceIndex, sourceIndex < index, index < items.count {
             // Dropping over a lower card means placing the dragged card after it.
@@ -123,10 +190,18 @@ struct StatusColumn: View {
             destination = index
         }
         withAnimation(.snappy(duration: 0.2)) {
-            viewModel.moveTask(id: id, to: status, at: destination)
+            viewModel.moveTasks(ids: ids, to: status, at: destination)
         }
         targetedIndex = nil
         return true
+    }
+}
+
+private struct TaskCardFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

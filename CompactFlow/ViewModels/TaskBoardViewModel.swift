@@ -7,6 +7,7 @@ final class TaskBoardViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var draggingTaskID: UUID?
     @Published var dropTarget: DropTarget?
+    @Published var selectedTaskIDs: Set<UUID> = []
 
     struct DropTarget: Equatable {
         let status: TaskStatus
@@ -77,12 +78,46 @@ final class TaskBoardViewModel: ObservableObject {
     func deleteTask(id: UUID) {
         guard let task = tasks.first(where: { $0.id == id }) else { return }
         tasks.removeAll { $0.id == id }
+        selectedTaskIDs.remove(id)
         normalize(task.status)
         persist()
     }
 
     func clearDone() {
         tasks.removeAll { $0.status == .done }
+        selectedTaskIDs = selectedTaskIDs.filter { id in tasks.contains { $0.id == id } }
+        persist()
+    }
+
+    func select(_ ids: Set<UUID>, extending: Bool) {
+        selectedTaskIDs = extending ? selectedTaskIDs.union(ids) : ids
+    }
+
+    func clearSelection() {
+        selectedTaskIDs.removeAll()
+    }
+
+    func dragPayload(for id: UUID) -> String {
+        let ids = selectedTaskIDs.contains(id) ? selectedTaskIDs : [id]
+        return ids.map(\.uuidString).sorted().joined(separator: ",")
+    }
+
+    func moveTasks(ids: [UUID], to status: TaskStatus, at requestedIndex: Int) {
+        let orderedIDs = tasks
+            .filter { ids.contains($0.id) }
+            .sorted {
+                if $0.status == $1.status { return $0.sortOrder < $1.sortOrder }
+                return TaskStatus.allCases.firstIndex(of: $0.status)! < TaskStatus.allCases.firstIndex(of: $1.status)!
+            }
+            .map(\.id)
+        guard !orderedIDs.isEmpty else { return }
+
+        var insertionIndex = requestedIndex
+        for id in orderedIDs {
+            moveTask(id: id, to: status, at: insertionIndex, shouldPersist: false)
+            insertionIndex += 1
+        }
+        selectedTaskIDs = Set(orderedIDs)
         persist()
     }
 

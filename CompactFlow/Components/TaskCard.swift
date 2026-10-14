@@ -48,8 +48,10 @@ struct TaskCard: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture(count: 2, perform: beginEdit)
-        .draggable(task.id.uuidString) {
-            Text(task.title).lineLimit(1).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .draggable(viewModel.dragPayload(for: task.id)) {
+            let count = viewModel.selectedTaskIDs.contains(task.id) ? viewModel.selectedTaskIDs.count : 1
+            Text(count > 1 ? "\(count) tasks" : task.title)
+                .lineLimit(1).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
         .contextMenu {
             Button("Edit", action: beginEdit)
@@ -70,13 +72,17 @@ struct TaskCard: View {
     }
 
     private var cardBackground: Color {
+        if viewModel.selectedTaskIDs.contains(task.id) {
+            return Color.accentColor.opacity(0.22)
+        }
         if isHovering { return Color(nsColor: .selectedContentBackgroundColor).opacity(0.16) }
         if task.status == .processing { return Color.orange.opacity(0.09) }
         return Color(nsColor: .controlBackgroundColor).opacity(0.72)
     }
 
     private var borderColor: Color {
-        task.status == .processing ? Color.orange.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.55)
+        if viewModel.selectedTaskIDs.contains(task.id) { return Color.accentColor.opacity(0.9) }
+        return task.status == .processing ? Color.orange.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.55)
     }
 
     private func beginEdit() {

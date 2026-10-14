@@ -24,6 +24,7 @@ private final class StatusBarController: NSObject {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var tasksCancellable: AnyCancellable?
+    private var advanceHitStartX: CGFloat = .greatestFiniteMagnitude
 
     init(viewModel: TaskBoardViewModel) {
         self.viewModel = viewModel
@@ -62,14 +63,33 @@ private final class StatusBarController: NSObject {
     }
 
     private func refresh() {
-        statusItem?.button?.title = viewModel.menuBarTitle + "   |   ▶"
+        guard let button = statusItem?.button else { return }
+        let taskTitle = viewModel.menuBarTitle
+        let separator = "   |   "
+        let fullTitle = taskTitle + separator + "▶"
+        let font = NSFont.menuBarFont(ofSize: 0)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+
+        button.attributedTitle = NSAttributedString(string: fullTitle, attributes: attributes)
+
+        // NSStatusBarButton centers its title inside the fixed-width status item.
+        // Derive the play region from the rendered text rather than the button's
+        // trailing edge, so changing task titles cannot move the clickable target
+        // away from the visible arrow.
+        let fullWidth = (fullTitle as NSString).size(withAttributes: attributes).width
+        let prefixWidth = ((taskTitle + separator) as NSString).size(withAttributes: attributes).width
+        let titleOriginX = max(0, (button.bounds.width - fullWidth) / 2)
+        advanceHitStartX = titleOriginX + prefixWidth - 8
     }
 
     @objc private func statusItemClicked() {
         guard let button = statusItem?.button else { return }
         if let event = NSApplication.shared.currentEvent {
             let point = button.convert(event.locationInWindow, from: nil)
-            if point.x >= button.bounds.maxX - 38 {
+            if point.x >= advanceHitStartX {
                 advance()
                 return
             }

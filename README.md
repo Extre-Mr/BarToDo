@@ -9,6 +9,7 @@ Bar To Do keeps tasks in three FIFO columns—**To Do**, **Processing**, and **D
 - Native SwiftUI interface presented from the macOS menu bar
 - Current task and play action directly in the menu bar
 - Drag and drop between columns and within a column
+- Marquee multi-selection with grouped drag and drop
 - FIFO queue automation
 - Inline editing, context menus, and completed-task cleanup
 - Local, atomic JSON persistence; no account, analytics, or network access
