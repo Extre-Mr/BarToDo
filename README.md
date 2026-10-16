@@ -25,7 +25,23 @@ Bar To Do keeps tasks in three FIFO columns—**To Do**, **Processing**, and **D
 
 1. Download `Bar-To-Do-v1.0.0-macOS.zip` from the latest GitHub Release.
 2. Unzip it and move **Bar To Do.app** to `/Applications`.
-3. Because the first community build is not notarized, Control-click the app and choose **Open** the first time.
+3. Because the community build is not notarized, Control-click the app and choose **Open** the first time.
+
+### If macOS blocks the app
+
+Bar To Do is open source, but macOS Gatekeeper checks Developer ID notarization rather than whether source code is public. If Control-click → **Open** is unavailable:
+
+1. Open **System Settings → Privacy & Security**.
+2. Find the message about Bar To Do and click **Open Anyway**.
+
+If macOS still blocks the app, remove only its downloaded-file quarantine attribute and launch it again:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Bar To Do.app"
+open "/Applications/Bar To Do.app"
+```
+
+You can inspect all source code in this repository or build it yourself with Xcode. The release does not require Xcode to run.
 
 ## Build from source
 
