@@ -9,10 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            self.statusBarController = StatusBarController(viewModel: self.viewModel)
-        }
+        statusBarController = StatusBarController(viewModel: viewModel)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -24,14 +21,26 @@ private final class StatusBarController: NSObject {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var tasksCancellable: AnyCancellable?
+    private var activationObserver: NSObjectProtocol?
     private var advanceHitStartX: CGFloat = .greatestFiniteMagnitude
 
     init(viewModel: TaskBoardViewModel) {
         self.viewModel = viewModel
         super.init()
         configureStatusItem()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.observeTasks()
+        activationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("CompactFlow.showPopover"),
+            object: Bundle.main.bundleIdentifier,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.showPopover() }
+        }
+        observeTasks()
+    }
+
+    deinit {
+        if let activationObserver {
+            DistributedNotificationCenter.default().removeObserver(activationObserver)
         }
     }
 
@@ -40,9 +49,17 @@ private final class StatusBarController: NSObject {
         statusItem = item
         guard let button = item.button else { return }
         button.target = self
-        button.action = #selector(statusItemClicked)
+        button.action = #selector(statusItemClicked(_:))
         button.sendAction(on: [.leftMouseUp])
         button.toolTip = "Open Compact Flow or advance the queue"
+        button.setAccessibilityLabel("Bar To Do")
+        button.setAccessibilityHelp("Click the task title to open the board, or the play button to advance the queue")
+        button.setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: "Advance Queue") { [weak self] in
+                self?.advance()
+                return true
+            }
+        ])
     }
 
     private func configurePopover() {
@@ -74,6 +91,7 @@ private final class StatusBarController: NSObject {
         ]
 
         button.attributedTitle = NSAttributedString(string: fullTitle, attributes: attributes)
+        button.setAccessibilityValue(taskTitle)
 
         // NSStatusBarButton centers its title inside the fixed-width status item.
         // Derive the play region from the rendered text rather than the button's
@@ -85,16 +103,16 @@ private final class StatusBarController: NSObject {
         advanceHitStartX = titleOriginX + prefixWidth - 8
     }
 
-    @objc private func statusItemClicked() {
-        guard let button = statusItem?.button else { return }
-        if let event = NSApplication.shared.currentEvent {
-            let point = button.convert(event.locationInWindow, from: nil)
-            if point.x >= advanceHitStartX {
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if let window = sender.window {
+            let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            let buttonPoint = sender.convert(windowPoint, from: nil)
+            if buttonPoint.x >= advanceHitStartX {
                 advance()
                 return
             }
         }
-        togglePopover(from: button)
+        togglePopover(from: sender)
     }
 
     private func togglePopover(from button: NSStatusBarButton) {
@@ -107,6 +125,11 @@ private final class StatusBarController: NSObject {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApplication.shared.activate(ignoringOtherApps: true)
         }
+    }
+
+    private func showPopover() {
+        guard let button = statusItem?.button else { return }
+        if !popover.isShown { togglePopover(from: button) }
     }
 
     @objc private func advance() {

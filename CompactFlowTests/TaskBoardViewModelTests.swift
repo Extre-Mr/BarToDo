@@ -103,4 +103,81 @@ final class TaskBoardViewModelTests: XCTestCase {
         let restored = TaskBoardViewModel(repository: repository)
         XCTAssertEqual(restored.tasks(in: .todo).map(\.title), ["Second", "First"])
     }
+
+    func testMultipleTasksMoveDownTogetherWithoutReversing() {
+        ["A", "B", "C", "D"].forEach { viewModel.addTask(title: $0) }
+        let items = viewModel.tasks(in: .todo)
+
+        viewModel.moveTasks(ids: [items[0].id, items[1].id], to: .todo, at: 4)
+
+        XCTAssertEqual(viewModel.tasks(in: .todo).map(\.title), ["C", "D", "A", "B"])
+    }
+
+    func testMultipleTasksMoveAcrossColumnsInVisualOrder() {
+        ["A", "B", "C"].forEach { viewModel.addTask(title: $0) }
+        let items = viewModel.tasks(in: .todo)
+        viewModel.moveTask(id: items[1].id, to: .processing)
+
+        viewModel.moveTasks(ids: [items[2].id, items[0].id], to: .processing, at: 0)
+
+        XCTAssertEqual(viewModel.tasks(in: .processing).map(\.title), ["A", "C", "B"])
+        XCTAssertTrue(viewModel.tasks(in: .todo).isEmpty)
+    }
+
+    func testFailedSaveRollsBackMutation() {
+        let failingRepository = FailingRepository(tasks: [TaskItem(title: "Existing")])
+        let subject = TaskBoardViewModel(repository: failingRepository)
+
+        XCTAssertFalse(subject.addTask(title: "Unsaved"))
+        XCTAssertEqual(subject.tasks(in: .todo).map(\.title), ["Existing"])
+        XCTAssertNotNil(subject.errorMessage)
+    }
+
+    func testFailedSaveRestoresSelectionAlongWithTasks() {
+        let existing = TaskItem(title: "Existing")
+        let failingRepository = FailingRepository(tasks: [existing])
+        let subject = TaskBoardViewModel(repository: failingRepository)
+        subject.select([existing.id], extending: false)
+
+        subject.deleteTask(id: existing.id)
+
+        XCTAssertEqual(subject.tasks, [existing])
+        XCTAssertEqual(subject.selectedTaskIDs, [existing.id])
+    }
+
+    func testCommandStyleSelectionCanBeToggled() {
+        viewModel.addTask(title: "First")
+        viewModel.addTask(title: "Second")
+        let items = viewModel.tasks(in: .todo)
+        viewModel.select([items[0].id], extending: false)
+
+        viewModel.toggleSelection(of: items[1].id)
+        XCTAssertEqual(viewModel.selectedTaskIDs, [items[0].id, items[1].id])
+
+        viewModel.toggleSelection(of: items[0].id)
+        XCTAssertEqual(viewModel.selectedTaskIDs, [items[1].id])
+    }
+
+    func testCorruptDataIsNotOverwrittenByNewTask() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("tasks.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let corruptData = Data("not-json".utf8)
+        try corruptData.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let subject = TaskBoardViewModel(repository: JSONTaskRepository(fileURL: fileURL))
+        XCTAssertFalse(subject.addTask(title: "Must not overwrite"))
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), corruptData)
+    }
+}
+
+private final class FailingRepository: TaskRepository {
+    let tasks: [TaskItem]
+
+    init(tasks: [TaskItem]) { self.tasks = tasks }
+    func load() throws -> [TaskItem] { tasks }
+    func save(_ tasks: [TaskItem]) throws { throw CocoaError(.fileWriteNoPermission) }
 }

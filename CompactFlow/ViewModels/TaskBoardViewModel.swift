@@ -5,16 +5,15 @@ import SwiftUI
 final class TaskBoardViewModel: ObservableObject {
     @Published private(set) var tasks: [TaskItem] = []
     @Published var errorMessage: String?
-    @Published var draggingTaskID: UUID?
-    @Published var dropTarget: DropTarget?
     @Published var selectedTaskIDs: Set<UUID> = []
 
-    struct DropTarget: Equatable {
-        let status: TaskStatus
-        let index: Int
-    }
-
     private let repository: TaskRepository
+    private var persistenceIsSafe = true
+
+    private struct StateSnapshot {
+        let tasks: [TaskItem]
+        let selectedTaskIDs: Set<UUID>
+    }
 
     init(repository: TaskRepository) {
         self.repository = repository
@@ -22,6 +21,7 @@ final class TaskBoardViewModel: ObservableObject {
             tasks = try repository.load()
             normalizeAll()
         } catch {
+            persistenceIsSafe = false
             errorMessage = error.localizedDescription
         }
     }
@@ -31,6 +31,7 @@ final class TaskBoardViewModel: ObservableObject {
             try self.init(repository: JSONTaskRepository())
         } catch {
             self.init(repository: InMemoryTaskRepository())
+            persistenceIsSafe = false
             errorMessage = error.localizedDescription
         }
     }
@@ -63,34 +64,46 @@ final class TaskBoardViewModel: ObservableObject {
     func addTask(title: String) -> Bool {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return false }
+        let previous = snapshot()
         tasks.append(TaskItem(title: clean, sortOrder: tasks(in: .todo).count))
-        persist()
-        return true
+        return persist(restoring: previous)
     }
 
     func updateTask(id: UUID, title: String) {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        let previous = snapshot()
         tasks[index].title = clean
-        persist()
+        persist(restoring: previous)
     }
 
     func deleteTask(id: UUID) {
         guard let task = tasks.first(where: { $0.id == id }) else { return }
+        let previous = snapshot()
         tasks.removeAll { $0.id == id }
         selectedTaskIDs.remove(id)
         normalize(task.status)
-        persist()
+        persist(restoring: previous)
     }
 
     func clearDone() {
+        let previous = snapshot()
         tasks.removeAll { $0.status == .done }
         selectedTaskIDs = selectedTaskIDs.filter { id in tasks.contains { $0.id == id } }
-        persist()
+        persist(restoring: previous)
     }
 
     func select(_ ids: Set<UUID>, extending: Bool) {
         selectedTaskIDs = extending ? selectedTaskIDs.union(ids) : ids
+    }
+
+    func toggleSelection(of id: UUID) {
+        guard tasks.contains(where: { $0.id == id }) else { return }
+        if selectedTaskIDs.contains(id) {
+            selectedTaskIDs.remove(id)
+        } else {
+            selectedTaskIDs.insert(id)
+        }
     }
 
     func clearSelection() {
@@ -103,22 +116,40 @@ final class TaskBoardViewModel: ObservableObject {
     }
 
     func moveTasks(ids: [UUID], to status: TaskStatus, at requestedIndex: Int) {
-        let orderedIDs = tasks
-            .filter { ids.contains($0.id) }
-            .sorted {
-                if $0.status == $1.status { return $0.sortOrder < $1.sortOrder }
-                return TaskStatus.allCases.firstIndex(of: $0.status)! < TaskStatus.allCases.firstIndex(of: $1.status)!
-            }
-            .map(\.id)
-        guard !orderedIDs.isEmpty else { return }
-
-        var insertionIndex = requestedIndex
-        for id in orderedIDs {
-            moveTask(id: id, to: status, at: insertionIndex, shouldPersist: false)
-            insertionIndex += 1
+        let requestedIDs = Set(ids)
+        let orderedTasks = TaskStatus.allCases.flatMap { sourceStatus in
+            tasks(in: sourceStatus).filter { requestedIDs.contains($0.id) }
         }
-        selectedTaskIDs = Set(orderedIDs)
-        persist()
+        guard !orderedTasks.isEmpty else { return }
+
+        let previous = snapshot()
+        let destinationBeforeMove = tasks(in: status)
+        let boundedIndex = max(0, min(requestedIndex, destinationBeforeMove.count))
+        let removedBeforeInsertion = destinationBeforeMove.prefix(boundedIndex)
+            .filter { requestedIDs.contains($0.id) }.count
+        let insertionIndex = boundedIndex - removedBeforeInsertion
+
+        var columns = Dictionary(uniqueKeysWithValues: TaskStatus.allCases.map {
+            ($0, tasks(in: $0).filter { !requestedIDs.contains($0.id) })
+        })
+        var destination = columns[status] ?? []
+        let moved = orderedTasks.map { task -> TaskItem in
+            var task = task
+            task.status = status
+            task.completedAt = status == .done ? (task.completedAt ?? Date()) : nil
+            return task
+        }
+        destination.insert(contentsOf: moved, at: max(0, min(insertionIndex, destination.count)))
+        columns[status] = destination
+        tasks = TaskStatus.allCases.flatMap { columnStatus in
+            (columns[columnStatus] ?? []).enumerated().map { index, task in
+                var task = task
+                task.sortOrder = index
+                return task
+            }
+        }
+        selectedTaskIDs = Set(orderedTasks.map(\.id))
+        persist(restoring: previous)
     }
 
     func advance() {
@@ -126,41 +157,21 @@ final class TaskBoardViewModel: ObservableObject {
         let todo = tasks(in: .todo)
         guard !processing.isEmpty || !todo.isEmpty else { return }
 
+        let previous = snapshot()
         if let firstProcessing = processing.first {
-            moveTask(id: firstProcessing.id, to: .done, at: 0, shouldPersist: false)
+            moveTaskInMemory(id: firstProcessing.id, to: .done, at: 0)
         }
         if let firstTodo = todo.first {
-            moveTask(id: firstTodo.id, to: .processing, at: tasks(in: .processing).count, shouldPersist: false)
+            moveTaskInMemory(id: firstTodo.id, to: .processing, at: tasks(in: .processing).count)
         }
-        persist()
+        persist(restoring: previous)
     }
 
     func moveTask(id: UUID, to status: TaskStatus, at requestedIndex: Int? = nil) {
-        moveTask(id: id, to: status, at: requestedIndex, shouldPersist: true)
+        moveTasks(ids: [id], to: status, at: requestedIndex ?? tasks(in: status).count)
     }
 
-    func previewMove(id: UUID, to status: TaskStatus, at requestedIndex: Int) {
-        guard tasks.contains(where: { $0.id == id }) else { return }
-        let current = tasks(in: status)
-        let sourceIndex = current.firstIndex(where: { $0.id == id })
-        var destination = max(0, min(requestedIndex, current.count))
-        if let sourceIndex, sourceIndex < destination { destination -= 1 }
-        let effective = max(0, min(destination, current.filter { $0.id != id }.count))
-        if tasks.first(where: { $0.id == id })?.status == status, sourceIndex == effective {
-            dropTarget = DropTarget(status: status, index: effective)
-            return
-        }
-        moveTask(id: id, to: status, at: requestedIndex, shouldPersist: false)
-        dropTarget = DropTarget(status: status, index: effective)
-    }
-
-    func finishDrop() {
-        draggingTaskID = nil
-        dropTarget = nil
-        persist()
-    }
-
-    private func moveTask(id: UUID, to status: TaskStatus, at requestedIndex: Int?, shouldPersist: Bool) {
+    private func moveTaskInMemory(id: UUID, to status: TaskStatus, at requestedIndex: Int?) {
         guard let oldIndex = tasks.firstIndex(where: { $0.id == id }) else { return }
         let oldStatus = tasks[oldIndex].status
         var destinationTasks = tasks(in: status).filter { $0.id != id }
@@ -189,7 +200,6 @@ final class TaskBoardViewModel: ObservableObject {
         }
         normalize(oldStatus)
         normalize(status)
-        if shouldPersist { persist() }
     }
 
     private func normalizeAll() {
@@ -205,14 +215,34 @@ final class TaskBoardViewModel: ObservableObject {
         }
     }
 
-    private func persist() {
+    @discardableResult
+    private func persist(restoring previous: StateSnapshot) -> Bool {
         normalizeAll()
+        guard persistenceIsSafe else {
+            restore(previous)
+            if errorMessage == nil {
+                errorMessage = "Tasks cannot be saved until the existing data file is repaired."
+            }
+            return false
+        }
         do {
             try repository.save(tasks)
             errorMessage = nil
+            return true
         } catch {
+            restore(previous)
             errorMessage = error.localizedDescription
+            return false
         }
+    }
+
+    private func snapshot() -> StateSnapshot {
+        StateSnapshot(tasks: tasks, selectedTaskIDs: selectedTaskIDs)
+    }
+
+    private func restore(_ snapshot: StateSnapshot) {
+        tasks = snapshot.tasks
+        selectedTaskIDs = snapshot.selectedTaskIDs
     }
 
 }

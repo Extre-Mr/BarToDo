@@ -49,8 +49,9 @@ struct StatusColumn: View {
                                     )
                                 }
                             }
-                            .dropDestination(for: String.self) { payloads, _ in
-                                move(payloads.first, to: index)
+                            .dropDestination(for: String.self) { payloads, location in
+                                let cardHeight = cardFrames[task.id]?.height ?? 0
+                                return move(payloads.first, to: location.y > cardHeight / 2 ? index + 1 : index)
                             } isTargeted: { targeted in
                                 targetedIndex = targeted ? index : nil
                             }
@@ -180,17 +181,9 @@ struct StatusColumn: View {
     private func move(_ payload: String?, to index: Int) -> Bool {
         guard let payload else { return false }
         let ids = payload.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
-        guard let id = ids.first else { return false }
-        let sourceIndex = ids.count == 1 ? items.firstIndex(where: { $0.id == id }) : nil
-        let destination: Int
-        if let sourceIndex, sourceIndex < index, index < items.count {
-            // Dropping over a lower card means placing the dragged card after it.
-            destination = index + 1
-        } else {
-            destination = index
-        }
+        guard !ids.isEmpty else { return false }
         withAnimation(.snappy(duration: 0.2)) {
-            viewModel.moveTasks(ids: ids, to: status, at: destination)
+            viewModel.moveTasks(ids: ids, to: status, at: index)
         }
         targetedIndex = nil
         return true

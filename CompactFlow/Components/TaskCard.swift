@@ -38,7 +38,7 @@ struct TaskCard: View {
             .buttonStyle(.plain)
             .opacity(isHovering && !isEditing ? 1 : 0)
             .allowsHitTesting(isHovering && !isEditing)
-            .accessibilityHidden(!isHovering || isEditing)
+            .accessibilityHidden(true)
             .accessibilityLabel("Delete \(task.title)")
         }
         .padding(.horizontal, 10)
@@ -47,6 +47,14 @@ struct TaskCard: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor))
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+        .onTapGesture {
+            let modifiers = NSEvent.modifierFlags
+            if modifiers.contains(.command) {
+                viewModel.toggleSelection(of: task.id)
+            } else {
+                viewModel.select([task.id], extending: modifiers.contains(.shift))
+            }
+        }
         .onTapGesture(count: 2, perform: beginEdit)
         .draggable(viewModel.dragPayload(for: task.id)) {
             let count = viewModel.selectedTaskIDs.contains(task.id) ? viewModel.selectedTaskIDs.count : 1
@@ -65,6 +73,9 @@ struct TaskCard: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(task.title), \(task.status.title)")
+        .accessibilityValue(viewModel.selectedTaskIDs.contains(task.id) ? "Selected" : "Not selected")
+        .accessibilityAction(named: "Edit") { beginEdit() }
+        .accessibilityAction(named: "Delete") { viewModel.deleteTask(id: task.id) }
     }
 
     private var accent: Color {
